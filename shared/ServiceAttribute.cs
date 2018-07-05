@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace shared
 {
@@ -14,12 +15,12 @@ namespace shared
     {
         public ServiceScope Scope { get; }
 
-        public bool ComponentOnly { get; }
+        public List<Type> Interfaces { get; }
 
-        public ServiceAttribute(ServiceScope scope, bool componentOnly)
+        public ServiceAttribute(ServiceScope scope, params Type[] interfaces)
         {
             Scope = scope;
-            ComponentOnly = componentOnly;
+            Interfaces = new List<Type>(interfaces);
         }
     }
 }

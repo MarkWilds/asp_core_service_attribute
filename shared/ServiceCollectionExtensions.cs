@@ -9,6 +9,11 @@ namespace Microsoft.Extensions.DependencyInjection
 {
     public static class ServiceCollectionExtensions
     {
+        private const int AssemblyRecursiveDepth = 1;
+        
+        /// <summary>
+        /// Find any class with the ServiceAttribute and adds it as a service
+        /// </summary>
         public static void ScanAssembly(this IServiceCollection serviceCollection)
         {
             ScanAssembly(serviceCollection, Assembly.GetEntryAssembly());
@@ -22,7 +27,27 @@ namespace Microsoft.Extensions.DependencyInjection
             if (assembly == null)
                 throw new ArgumentNullException(nameof(assembly));
 
-            foreach (Type type in assembly.GetTypes())
+            CheckAssembly(serviceCollection, assembly);
+        }
+
+        private static void CheckAssembly(IServiceCollection serviceCollection, Assembly assembly, int depth = 0)
+        {
+            if (depth++ == AssemblyRecursiveDepth)
+                return;
+
+            IEnumerable<TypeInfo> types = assembly.DefinedTypes;
+            CheckTypesForAttribute(serviceCollection, types);
+
+            AssemblyName[] assemblies = assembly.GetReferencedAssemblies();
+            foreach (AssemblyName subAssembly in assemblies)
+            {
+                CheckAssembly(serviceCollection, Assembly.Load(subAssembly), depth);    
+            }
+        }
+
+        private static void CheckTypesForAttribute(IServiceCollection serviceCollection, IEnumerable<TypeInfo> types)
+        {
+            foreach (TypeInfo type in types)
             {
                 ServiceAttribute serviceAttribute =
                     type.GetCustomAttribute<ServiceAttribute>();
@@ -45,37 +70,55 @@ namespace Microsoft.Extensions.DependencyInjection
             }
         }
 
-        /// <summary>
-        /// Adds the serviceType as service
-        /// </summary>
         private static void AddService(string methodName, IServiceCollection serviceCollection, Type serviceType,
             ServiceAttribute attribute)
         {
             try
             {
                 List<Type> servicesTypes = new List<Type>();
-                Type[] interfaces = serviceType.GetInterfaces();
-                int genericArguments = attribute.ComponentOnly ? 1 : 2;
+                if (attribute.Interfaces.Any())
+                {
+                    foreach (Type @interface in attribute.Interfaces)
+                    {
+                        servicesTypes.Add(@interface);
+                        servicesTypes.Add(serviceType);
 
-                if (interfaces.Any() && !attribute.ComponentOnly)
-                    servicesTypes.AddRange(interfaces);
-                servicesTypes.Add(serviceType);
+                        MethodInfo genericExtensionMethod =
+                            GetGenericExtensionMethod(methodName, 2, serviceCollection, servicesTypes.ToArray());
+                        genericExtensionMethod.Invoke(serviceCollection, new object[] {serviceCollection});
 
-                IEnumerable<MethodInfo> methodInfos = from method in GetExtensionMethods(serviceCollection)
-                    where method.Name == methodName && method.IsGenericMethod 
-                          && method.GetGenericArguments().Length == genericArguments 
-                    select method;
+                        servicesTypes.Clear();
 
-                MethodInfo extensionMethod = methodInfos.First();
-                MethodInfo genericExtensionMethod = extensionMethod.MakeGenericMethod(servicesTypes.ToArray());
-                genericExtensionMethod.Invoke(serviceCollection, new object[] {serviceCollection});
+                        Console.WriteLine(
+                            $"Registered service: {serviceType.Namespace}.{serviceType.Name} with interface " +
+                            $"{@interface.Namespace}.{@interface.Name}");
+                    }
+                }
+                else
+                {
+                    servicesTypes.Add(serviceType);
+                    MethodInfo genericExtensionMethod =
+                        GetGenericExtensionMethod(methodName, 1, serviceCollection, servicesTypes.ToArray());
+                    genericExtensionMethod.Invoke(serviceCollection, new object[] {serviceCollection});
 
-                Console.WriteLine($"Registered service: {serviceType.Namespace}.{serviceType.Name}");
+                    Console.WriteLine($"Registered service: {serviceType.Namespace}.{serviceType.Name}");
+                }
             }
             catch (NullReferenceException ex)
             {
-                Console.WriteLine($"Failed to register service : {serviceType.Namespace}.{serviceType.Name}");
+                Console.WriteLine($"Failed to register service : {serviceType.Namespace}.{serviceType.Name}", ex);
             }
+        }
+
+        private static MethodInfo GetGenericExtensionMethod(string methodName, int generics,
+            IServiceCollection serviceCollection, params Type[] types)
+        {
+            MethodInfo extensionMethod = (from method in GetExtensionMethods(serviceCollection)
+                where method.Name == methodName && method.IsGenericMethod
+                                                && method.GetGenericArguments().Length == generics
+                select method).First();
+
+            return extensionMethod.MakeGenericMethod(types);
         }
 
         /// <summary>
